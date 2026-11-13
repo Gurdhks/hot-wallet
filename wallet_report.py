@@ -160,11 +160,42 @@ def get_ltc_balance(address: str) -> float:
     # 3. BlockCypher — also used for DOGE; fine as an occasional fallback
     return get_blockcypher_balance("ltc", address)
 
-# ── DOGE (BlockCypher — only one call, less likely to be rate-limited) ───────
+# ── DOGE (multi-source fallback) ──────────────────────────────────────────────
 
 def get_blockcypher_balance(symbol: str, address: str) -> float:
     data = safe_get_json(f"https://api.blockcypher.com/v1/{symbol}/main/addrs/{address}/balance")
     return data["final_balance"] / SATOSHI_PER_BTC
+
+def get_doge_balance(address: str) -> float:
+    """
+    Tries three DOGE sources in order:
+      1. dogechain.com  – no key, returns balance already in DOGE
+      2. BlockCypher    – intermittent 502s
+      3. Blockchair     – may 430 on shared CI IPs
+    """
+    errs = []
+
+    try:
+        data = safe_get_json(f"https://dogechain.com/api/v1/address/balance/{address}")
+        if data.get("success") != 1:
+            raise RuntimeError(f"Unexpected response: {data}")
+        return float(data["balance"])
+    except Exception as e:
+        errs.append(f"Dogechain: {e}")
+
+    try:
+        return get_blockcypher_balance("doge", address)
+    except Exception as e:
+        errs.append(f"BlockCypher: {e}")
+
+    try:
+        data = safe_get_json(f"https://api.blockchair.com/dogecoin/dashboards/address/{address}")
+        koinu = data["data"][address]["address"]["balance"]
+        return koinu / SATOSHI_PER_BTC
+    except Exception as e:
+        errs.append(f"Blockchair: {e}")
+
+    raise RuntimeError(" | ".join(errs))
 
 # ── XRP ──────────────────────────────────────────────────────────────────────
 
@@ -334,7 +365,7 @@ def main():
     safe_run("XRP",  lambda: get_xrp_balance(ADDR["XRP"]))
     safe_run("XLM",  lambda: get_xlm_balance(ADDR["XLM"]))
     safe_run("BCH",  lambda: get_bch_balance(ADDR["BCH"]))
-    safe_run("DOGE", lambda: get_blockcypher_balance("doge", ADDR["DOGE"]))
+    safe_run("DOGE", lambda: get_doge_balance(ADDR["DOGE"]))
 
     for sym, meta in ERC20.items():
         safe_run(sym, lambda m=meta: get_erc20_balance(ADDR["ETH"], m["contract"], m["decimals"]))
